@@ -5,7 +5,9 @@ WLS Estimation of Spillover Effects
 __author__ = """ Pablo Estrada pabloestradace@gmail.com """
 
 import numpy as np
+import pandas as pd
 from scipy import sparse as spr
+from scipy import stats
 
 
 class WLS():
@@ -46,7 +48,8 @@ class WLS():
                     kernel_weights=None,
                     name_x=None,
                     interaction=True,
-                    subsample=None):
+                    subsample=None,
+                    contrast='spillover'):
 
             # Outcome and treatment exposure
             y = data[name_y].values
@@ -94,9 +97,34 @@ class WLS():
             # Variance
             e = np.diag(y - X @ beta)
             V = XWXi @ X.T @ W @ e @ weights @ e @ W @ X @ XWXi
+            # Summary of results
+            if t == 4:
+                G = 1/2 * np.array([-1, -1, 1, 1]) if contrast is 'direct' else 1/2 * np.array([-1, 1, -1, 1])
+            elif t == 2:
+                G = np.array([-1, 1])
+            else:
+                raise ValueError('Contrast not available for T lenght = {}'.format(t))
+            coef = np.insert(beta, 0, G @ beta[:t])
+            se = np.insert(np.sqrt(V.diagonal()), 0, np.sqrt(G @ V[:t, :t] @ G.T))
+            tval = coef / se
+            pval = 2 * (1 - stats.norm.cdf(np.abs(tval)))
+            ci_low = coef - 1.96*se
+            ci_up = coef + 1.96*se
+            if name_x is None:
+                name_vars = [contrast] + name_z
+            else:
+                if interaction:
+                    name_vars = [contrast] + name_z + [zi + '*' + xi for zi in name_z for xi in name_x]
+                else: 
+                    name_vars = [contrast] + name_z + name_x
+            df_results = pd.DataFrame({'coef': coef, 'se': se, 't-val': tval, 'p-val': pval,
+                                       'ci-low': ci_low, 'ci-up': ci_up},
+                                      index=name_vars)
 
             self.params = beta
             self.vcov = V
+            self.summary = df_results
+
 
 
 def sinv(A):

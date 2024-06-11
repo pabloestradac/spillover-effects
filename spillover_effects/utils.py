@@ -22,6 +22,8 @@ def adjacency_matrix(edges, directed=True, nodes=None):
                 Column 2,3,j+1 are the target nodes
     directed  : bool
                 Whether the graph is directed or not
+    nodes     : array
+                n x 1 array of the nodes order
     """
     # Transform edges to two columns of source and target nodes
     data = edges.iloc[:, 0:2].dropna()
@@ -34,10 +36,10 @@ def adjacency_matrix(edges, directed=True, nodes=None):
     nodes = edges.stack().unique() if nodes is None else nodes
     n = len(nodes)
     # Create mapping of nodes to indices
-    nodes_map = {nodes[i]: i for i in range(n)}
+    nodes_map = {nodes[i]: str(i) for i in range(n)}
     data = data.replace(nodes_map)
-    rows = data[0]
-    cols = data[1]
+    rows = data[0].astype(int)
+    cols = data[1].astype(int)
     ones = np.ones(len(rows), np.uint32)
     A = spr.coo_matrix((ones, (rows, cols)), shape=(n, n))
     if not directed:
@@ -61,8 +63,8 @@ def spillover_treatment(treatment, A, interaction=False):
     if interaction:
         spillover = ((A @ treatment) > 0) * 1
         return np.vstack([(1-treatment) * (1-spillover), 
-                          treatment     * (1-spillover), 
                           (1-treatment) * spillover, 
+                          treatment     * (1-spillover), 
                           treatment     * spillover]).T
     else:
         spillover = ((A @ treatment) > 0) * 1
@@ -81,6 +83,8 @@ def spillover_pscore(A, n_treated, blocks=None, matrix=False):
                 Number of treated individuals in the block
     blocks    : array
                 n x 1 array of block assignments, k unique blocks
+    matrix    : bool
+                Whether to return the matrix of propensity scores
     """
     n = A.shape[0]
     if blocks is None:
@@ -105,8 +109,8 @@ def spillover_pscore(A, n_treated, blocks=None, matrix=False):
         pscore_direct = [n_treated / blocks.value_counts().loc[i] for i in blocks]
     if matrix:
         return np.vstack([(1-pscore_direct) * (1-pscore_spillover), 
-                          pscore_direct     * (1-pscore_spillover), 
                           (1-pscore_direct) * pscore_spillover, 
+                          pscore_direct     * (1-pscore_spillover), 
                           pscore_direct     * pscore_spillover]).T
     else:
         return np.vstack([1-pscore_spillover, pscore_spillover]).T

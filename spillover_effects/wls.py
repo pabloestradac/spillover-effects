@@ -7,7 +7,7 @@ __author__ = """ Pablo Estrada pabloestradace@gmail.com """
 import numpy as np
 import pandas as pd
 from scipy import sparse as spr
-from scipy import stats
+from scipy.stats import norm
 
 
 class WLS():
@@ -107,7 +107,7 @@ class WLS():
             coef = np.insert(beta, 0, G @ beta[:t])
             se = np.insert(np.sqrt(V.diagonal()), 0, np.sqrt(G @ V[:t, :t] @ G.T))
             tval = coef / se
-            pval = 2 * (1 - stats.norm.cdf(np.abs(tval)))
+            pval = 2 * (1 - norm.cdf(np.abs(tval)))
             ci_low = coef - 1.96*se
             ci_up = coef + 1.96*se
             if name_x is None:

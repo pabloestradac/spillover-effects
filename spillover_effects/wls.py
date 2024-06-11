@@ -99,7 +99,7 @@ class WLS():
             V = XWXi @ X.T @ W @ e @ weights @ e @ W @ X @ XWXi
             # Summary of results
             if t == 4:
-                G = 1/2 * np.array([-1, -1, 1, 1]) if contrast is 'direct' else 1/2 * np.array([-1, 1, -1, 1])
+                G = 1/2 * np.array([-1, -1, 1, 1]) if contrast == 'direct' else 1/2 * np.array([-1, 1, -1, 1])
             elif t == 2:
                 G = np.array([-1, 1])
             else:

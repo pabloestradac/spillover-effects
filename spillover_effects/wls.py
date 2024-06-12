@@ -17,27 +17,33 @@ class WLS():
     
         Parameters
         ----------
-        y             : array
-                        n x 1 array of dependent variable
-        Z             : array
-                        n x t array of exposure mapping
-        pscore        : array
-                        n x 1 array of propensity scores
-        A             : array
-                        n x n adjacency matrix
-        X             : array
-                        n x k array of covariates
+        name_y        : str
+                        Name of the outcome variable
+        name_z        : str or list
+                        Name of the treatment exposure variable(s)
+        name_pscore   : str
+                        Name of the propensity score variable
+        data          : DataFrame
+                        Data containing the variables of interest
+        kernel_weights: array
+                        Kernel weights for the estimation
+        name_x        : str or list
+                        Name of the covariates
         interaction   : bool
-                        Whether to include the interaction of Z and X
-        bw            : int
-                        Bandwidth for kernel matrix
+                        Whether to include interaction terms between Z and X
+        subsample     : array
+                        Subsample of observations to consider
+        contrast      : str
+                        Type of contrast to estimate (direct or spillover)
     
         Attributes
         ----------
         params        : array
-                        (t+k) x 1 array of WLS coefficients
+                        WLS coefficients
         vcov          : array
                         Variance covariance matrix
+        summary       : DataFrame
+                        Summary of WLS results
         """
     
         def __init__(self,

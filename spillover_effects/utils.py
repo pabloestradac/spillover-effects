@@ -138,3 +138,12 @@ def kernel(A, bw):
     if eigenvalues[0] < 0:
         weights = eigenvectors @ np.diag(np.maximum(eigenvalues, 0)) @ eigenvectors.T
     return weights
+
+
+def load_data():
+    """
+    Call simulated data for testing purposes
+    """
+    df = pd.read_csv('https://raw.githubusercontent.com/pabloestradac/spillover-effects/master/data/data_spillover.csv')
+    dist_mat = np.load('https://raw.githubusercontent.com/pabloestradac/spillover-effects/master/data/dist_mat.npy')
+    return df, dist_mat

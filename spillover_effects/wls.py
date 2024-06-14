@@ -77,12 +77,19 @@ class WLS():
             # Kernel matrix
             n = Z.shape[0]
             weights = np.identity(n) if kernel_weights is None else kernel_weights
-            # Filter by subsample of interest
+            # Filter by subsample of interest and nonmissing values
+            missing = data[[name_y] + name_z + name_x].isna().any(axis=1)
+            if missing.sum() > 0: 
+                print('Warning: {} observations have missing values'.format(missing.sum()))
+                y = y[~missing]
+                Z = Z[~missing]
+                pscore = pscore[~missing]
+                weights = weights[~missing,:][:,~missing]
+                X = X[~missing] if X is not None else None
             if subsample is not None:
                 y = y[subsample]
                 Z = Z[subsample]
                 pscore = pscore[subsample]
-                selection = selection[subsample]
                 weights = weights[subsample,:][:,subsample]
                 X = X[subsample] if X is not None else None
             # Check for propensity score outside (0.01, 0.99)

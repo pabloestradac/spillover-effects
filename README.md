@@ -23,7 +23,7 @@ print(wls_results.summary)
 
 The package also provides functions to calculate the propensity score, spillover exposure, and kernel weights matrix for the WLS estimator. Detailed examples can be found in the [examples](https://github.com/pabloestradac/spillover-effects/blob/main/example.ipynb) notebook. 
 
-The two main inputs to use this package are the data and the edge list. The data should be a pandas DataFrame with the following columns:
+The two main inputs to use this package are the data and the edge list. The data should be a pandas DataFrame with columns such as:
 
 | ID | Y | D | X |
 |----|---|---|---|

@@ -21,7 +21,12 @@ import spillover_effects as spef
 data, kernel_mat = spef.utils.load_data()
 
 # Estimate spillover effects
-wls_results = spef.WLS(name_y='Y', name_z=['exposure0', 'exposure1'], name_pscore=['pscore0', 'pscore1'], data=data, kernel_weights=kernel_mat, name_x='X')
+wls_results = spef.WLS(name_y='Y', 
+                       name_z=['exposure0', 'exposure1'], 
+                       name_pscore=['pscore0', 'pscore1'], 
+                       data=data, 
+                       kernel_weights=kernel_mat, 
+                       name_x='X')
 print(wls_results.summary)
 ```
 

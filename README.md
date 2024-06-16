@@ -17,13 +17,27 @@ The package provides a class `WLS` that can be used to estimate spillover effect
 ```python
 import spillover_effects as spef
 
-wls_results = spef.WLS(name_y='Y', name_z=['exposure0', 'exposure1'], name_pscore=['pscore0', 'pscore1'], data=data, kernel_weights=distance_matrix, name_x='X')
+# Load data and kernel matrix
+data, kernel_mat = spef.utils.load_data()
+
+# Estimate spillover effects
+wls_results = spef.WLS(name_y='Y', name_z=['exposure0', 'exposure1'], name_pscore=['pscore0', 'pscore1'], data=data, kernel_weights=kernel_mat, name_x='X')
 print(wls_results.summary)
 ```
 
-The package also provides functions to calculate the propensity score, spillover exposure, and kernel weights matrix for the WLS estimator. Detailed examples can be found in the [examples](https://github.com/pabloestradac/spillover-effects/blob/main/example.ipynb) notebook. 
+The output of the previous code is:
 
-The two main inputs to use this package are the data and the edge list. The data should be a pandas DataFrame with columns such as:
+|            | coef |  se  | t-val | p-val | ci-low | ci-up |
+|------------|------|------|-------|-------|--------|-------|
+| spillover  | 0.71 | 0.30 |  2.36 |  0.02 |   0.12 |  1.30 |
+| exposure0  | -4.01| 0.31 |-12.95 |  0.00 |  -4.62 | -3.40 |
+| exposure1  | -3.30| 0.23 |-14.42 |  0.00 |  -3.75 | -2.85 |
+| exposure0*X| -2.08| 0.14 |-14.49 |  0.00 |  -2.37 | -1.80 |
+| exposure1*X| -2.21| 0.11 |-19.57 |  0.00 |  -2.43 | -1.99 |
+
+The two inputs that the WLS class requires are a pandas DataFrame with the data and a sparse matrix for the kernel weights. The package provides helper functions to calculate the propensity score (pscore column), spillover exposure (exposure column), and kernel weights (sparse matrix) for the WLS estimator. Detailed examples can be found in the [examples](https://github.com/pabloestradac/spillover-effects/blob/main/example.ipynb) notebook. 
+
+The two data structures the user needs to use this package are 1) the data and 2) the edge list. The data should be a pandas DataFrame with columns such as:
 
 | ID | Y | D | X |
 |----|---|---|---|

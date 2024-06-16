@@ -138,3 +138,18 @@ def kernel(A, bw):
     if eigenvalues[0] < 0:
         weights = eigenvectors @ np.diag(np.maximum(eigenvalues, 0)) @ eigenvectors.T
     return weights
+
+
+def load_data():
+    """
+    Load data for spillover effects estimation
+    """
+    path_data = 'https://raw.githubusercontent.com/pabloestradac/spillover-effects/main/data/'
+    edges = pd.read_csv(path_data + 'edges.csv')
+    data = pd.read_csv(path_data + 'data.csv')
+    A, nodes = adjacency_matrix(edges, directed=True)
+    data = data.set_index('node').loc[nodes].reset_index()
+    data[['pscore0', 'pscore1']] = spillover_pscore(A, data['D'].sum())
+    data[['exposure0', 'exposure1']] = spillover_treatment(data['D'], A)
+    distances = kernel(A, 3)
+    return data, distances

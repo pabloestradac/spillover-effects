@@ -28,7 +28,7 @@ class WLS():
         kernel_weights: array
                         Kernel weights for the estimation
         name_x        : str or list
-                        Name of the covariates
+                        Name of covariate(s)
         interaction   : bool
                         Whether to include interaction terms between Z and X
         subsample     : array

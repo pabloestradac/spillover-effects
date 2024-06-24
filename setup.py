@@ -7,6 +7,7 @@ from spillover_effects import __version__
 setup(
     name='spillover-effects',
     version=__version__,
+    description='Estimate spillover effects of social network on a randomized experiment.',
 
     url='https://github.com/pabloestradac/spillover-effects',
     author='Pablo Estrada',

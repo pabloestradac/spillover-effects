@@ -32,6 +32,9 @@ def adjacency_matrix(edges, directed=True, nodes=None):
         data_j = edges.iloc[:, [0, j]].dropna()
         data_j.columns = [0, 1]
         data = pd.concat([data, data_j], ignore_index=True)
+    # Check for repeated (i,j) and (j,i) edges when undirected
+    if not directed:
+        data = pd.DataFrame({tuple(sorted(i)): i for i in data.values}.values())
     # Get unique nodes
     nodes = edges.stack().unique() if nodes is None else nodes
     n = len(nodes)

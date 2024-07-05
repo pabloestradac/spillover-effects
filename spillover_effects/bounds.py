@@ -11,140 +11,168 @@ from scipy.stats import norm
 
 
 class Bounds():
-    
-        """
-        Bounds using WLS estimation of spillover effects under a pre-specified exposure mapping.
-    
-        Parameters
-        ----------
-        name_y        : str
-                        Name of the outcome variable
-        name_s        : str
-                        Name of the selection variable
-        name_z        : str or list
-                        Name of the treatment exposure variable(s)
-        name_pscore   : str
-                        Name of the propensity score variable
-        data          : DataFrame
-                        Data containing the variables of interest
-        kernel_weights: array
-                        Kernel weights for the estimation
-        name_x        : str or list
-                        Name of covariate(s)
-        interaction   : bool
-                        Whether to include interaction terms between Z and X
-        subsample     : array
-                        Subsample of observations to consider
-        contrast      : str
-                        Type of contrast to estimate (direct or spillover)
-    
-        Attributes
-        ----------
-        params        : array
-                        WLS coefficients
-        vcov          : array
-                        Variance covariance matrix
-        summary       : DataFrame
-                        Summary of WLS results
-        """
-    
-        def __init__(self,
-                    name_y,
-                    name_s,
-                    name_z,
-                    name_pscore,
-                    data,
-                    kernel_weights=None,
-                    name_x=None,
-                    interaction=True,
-                    subsample=None,
-                    contrast='spillover'):
+    """
+    Bounds using WLS estimation of spillover effects under a pre-specified exposure mapping.
 
-            # Outcome and treatment exposure
-            selection = data[name_s].astype('bool').values
-            y = data.loc[selection, name_y].values
-            Z = data[name_z].values
-            pscore = data[name_pscore].values
-            # Standardize or create matrix X
-            t = Z.shape[1]
-            name_x = [name_x] if isinstance(name_x, str) else name_x
-            X = data[name_x].values if name_x is not None else None
-            if X is not None:
-                X = (X - X.mean(axis=0)) # / X.std(axis=0)
-                if interaction:
-                    ZX = np.hstack([Z[:, i:i+1] * X for i in range(t)])
-                    X = np.hstack((Z, ZX))
-                else:
-                    X = np.hstack((Z, X))
+    Parameters
+    ----------
+    name_y        : str
+                    Name of the outcome variable
+    name_s        : str
+                    Name of the selection variable
+    name_z        : str or list
+                    Name of the treatment exposure variable(s)
+    name_pscore   : str
+                    Name of the propensity score variable
+    data          : DataFrame
+                    Data containing the variables of interest
+    kernel_weights: array
+                    Kernel weights for the estimation
+    name_x        : str or list
+                    Name of covariate(s)
+    interaction   : bool
+                    Whether to include interaction terms between Z and X
+    subsample     : array
+                    Subsample of observations to consider
+    contrast      : str
+                    Type of contrast to estimate (direct or spillover)
+
+    Attributes
+    ----------
+    params        : array
+                    WLS coefficients
+    vcov          : array
+                    Variance covariance matrix
+    summary       : DataFrame
+                    Summary of WLS results
+    """
+
+    def __init__(self,
+                name_y,
+                name_s,
+                name_z,
+                name_pscore,
+                data,
+                kernel_weights=None,
+                name_x=None,
+                interaction=True,
+                subsample=None,
+                contrast='spillover'):
+
+        # Outcome and treatment exposure
+        selection = data[name_s].astype('bool').values
+        y = data.loc[selection, name_y].values
+        Z = data[name_z].values
+        pscore = data[name_pscore].values
+        # Standardize or create matrix X
+        t = Z.shape[1]
+        name_x = [name_x] if isinstance(name_x, str) else name_x
+        X = data[name_x].values if name_x is not None else None
+        if X is not None:
+            X = (X - X.mean(axis=0)) # / X.std(axis=0)
+            if interaction:
+                ZX = np.hstack([Z[:, i:i+1] * X for i in range(t)])
+                X = np.hstack((Z, ZX))
             else:
-                X = Z.copy() if X is None else X
-            # Kernel matrix
-            n = Z.shape[0]
-            weights = np.identity(n) if kernel_weights is None else kernel_weights
-            # Filter by subsample of interest
-            if subsample is not None:
-                y = y[subsample[selection]]
-                Z = Z[subsample]
-                pscore = pscore[subsample]
-                selection = selection[subsample]
-                weights = weights[subsample,:][:,subsample]
-                X = X[subsample] if X is not None else None
-            # Check for propensity score outside (0.01, 0.99)
-            valid = (np.sum(Z*pscore, axis=1) > 0.01) & (np.sum(Z*pscore, axis=1) < 0.99)
-            drop_obs = np.sum(~valid)
-            if drop_obs > 0:
-                print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(drop_obs))
-                y = y[valid[selection]]
-                Z = Z[valid]
-                pscore = pscore[valid]
-                selection = selection[valid]
-                weights = weights[valid,:][:,valid]
-                X = X[valid] if X is not None else None
-            # Calculate trimming probability
-            p_hat, group_trimmed, alpha_hat = trim_prob(selection, Z, pscore)
-            n_list = ns_for_variance(selection, Z, pscore, group_trimmed)
-            # Calculate trimming indicators
-            Zs = Z[selection]
-            Xs = X[selection] if X is not None else None
-            pscore_s = pscore[selection]
-            weights = weights[selection,:][:,selection]
-            trim_bounds, quantile_bounds = trim_quantile(y, Zs, p_hat, group_trimmed)
-            beta_bounds, V_bounds = [], []
-            for i in range(2):
-                trim = trim_bounds[i]
-                quantile = quantile_bounds[i]
-                y_trim = y[trim >= 0]
-                Z_trim = Zs[trim >= 0]
-                pscore_trim = pscore_s[trim >= 0]
-                weights_trim = weights[trim >= 0, :][:, trim >= 0]
-                # Weight with propensity score
-                W = np.diag(1 / np.sum(Z_trim*pscore_trim, axis=1))
-                # Fit WLS
-                XWXi = sinv(Z_trim.T @ W @ Z_trim)
-                beta = XWXi @ Z_trim.T @ W @ y_trim
-                # Variance
-                e = np.diag(y_trim - Z_trim @ beta)
-                V = XWXi @ Z_trim.T @ W @ e @ weights_trim @ e @ W @ Z_trim @ XWXi
-                v_y = (quantile - beta[group_exposed==group_trimmed])**2 * (1-p_hat)/p_hat / n_list[3-group_trimmed]
-                v_q = ((quantile - beta[group_exposed==group_trimmed])**2) * ((p_hat-alpha_hat)/alpha_hat/n_list[0] + (1-alpha_hat)/alpha_hat/n_list[1])
-                V_unadj = V[group_exposed==group_trimmed, group_exposed==group_trimmed]
-                V[group_exposed==group_trimmed, group_exposed==group_trimmed] = V_unadj + v_y + v_q
-                beta_bounds.append(beta)
-                V_bounds.append(V)
+                X = np.hstack((Z, X))
+        else:
+            X = Z.copy()
+        # Kernel matrix
+        n = Z.shape[0]
+        weights = np.identity(n) if kernel_weights is None else kernel_weights
+        # Filter by subsample of interest
+        if subsample is not None:
+            y = y[subsample[selection]]
+            Z = Z[subsample]
+            pscore = pscore[subsample]
+            selection = selection[subsample]
+            weights = weights[subsample,:][:,subsample]
+            X = X[subsample]
+        # Check for propensity score outside (0.01, 0.99)
+        valid = (np.sum(Z*pscore, axis=1) > 0.01) & (np.sum(Z*pscore, axis=1) < 0.99)
+        drop_obs = np.sum(~valid)
+        if drop_obs > 0:
+            print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(drop_obs))
+            y = y[valid[selection]]
+            Z = Z[valid]
+            pscore = pscore[valid]
+            selection = selection[valid]
+            weights = weights[valid,:][:,valid]
+            X = X[valid]
+        # Calculate trimming probability
+        G = np.array([-1, 1/3, 1/3, 1/3]) if t == 4 else np.array([-1, 1]) 
+        group_exposed = np.array([0, 1, 1, 1]) if t == 4 else np.array([0, 1])
+        p_hat, group_trimmed, alpha_hat = trim_prob(selection, Z, pscore)
+        n_list = ns_for_variance(selection, Z, pscore, group_trimmed)
+        # Calculate trimming indicators
+        Zs = Z[selection]
+        Xs = X[selection]
+        pscore_s = pscore[selection]
+        weights = weights[selection,:][:,selection]
+        trim_bounds, quantile_bounds = trim_quantile(y, Zs, p_hat, group_trimmed)
+        beta_bounds, V_bounds, df_bounds = [], [], []
+        for i in range(2):
+            trim = trim_bounds[i]
+            quantile = quantile_bounds[i]
+            y_trim = y[trim >= 0]
+            Z_trim = Zs[trim >= 0]
+            X_trim = Xs[trim >= 0]
+            pscore_trim = pscore_s[trim >= 0]
+            weights_trim = weights[trim >= 0, :][:, trim >= 0]
+            # Weight with propensity score
+            W = np.diag(1 / np.sum(Z_trim*pscore_trim, axis=1))
+            # Fit WLS
+            XWXi = sinv(X_trim.T @ W @ X_trim)
+            beta = XWXi @ X_trim.T @ W @ y_trim
+            # Variance
+            e = np.diag(y_trim - X_trim @ beta)
+            V = XWXi @ X_trim.T @ W @ e @ weights_trim @ e @ W @ X_trim @ XWXi
+            betat = beta[:t]
+            Vbeta = V[:t, :t].copy()
+            q_beta_2 = (quantile - betat[group_exposed==group_trimmed])**2
+            v_y = q_beta_2 * (1-p_hat)/p_hat / n_list[3-group_trimmed]
+            v_q = q_beta_2 * ((p_hat-alpha_hat)/alpha_hat/n_list[0] + (1-alpha_hat)/alpha_hat/n_list[1])
+            V_unadj = Vbeta[group_exposed==group_trimmed, group_exposed==group_trimmed].copy()
+            Vbeta[group_exposed==group_trimmed, group_exposed==group_trimmed] = V_unadj + v_y + v_q
+            beta_bounds.append(beta)
+            V_bounds.append(Vbeta)
+            coef = np.insert(beta, 0, G @ beta[:t])
+            se = np.insert(np.sqrt(V.diagonal()), 0, np.sqrt(G @ V[:t, :t] @ G.T))
+            tval = coef / se
+            pval = 2 * (1 - norm.cdf(np.abs(tval)))
+            ci_low = coef - 1.96*se
+            ci_up = coef + 1.96*se
+            if name_x is None:
+                name_vars = [contrast] + name_z
+            else:
+                if interaction:
+                    name_vars = [contrast] + name_z + [zi + '*' + xi for zi in name_z for xi in name_x]
+                else: 
+                    name_vars = [contrast] + name_z + name_x
+            df_bounds.append(pd.DataFrame({'coef': coef, 'se': se, 't-val': tval, 'p-val': pval,
+                                            'ci-low': ci_low, 'ci-up': ci_up},
+                                            index=name_vars))
 
+        coef = np.array([G @ beta_bounds[0][:t], G @ beta_bounds[1][:t]])
+        se = np.array([np.sqrt(G @ V_bounds[0][:t, :t] @ G.T), np.sqrt(G @ V_bounds[1][:t, :t] @ G.T)])
+        ci_low = coef[0] - 1.645*se[0]
+        ci_up = coef[1] + 1.645*se[1]
+        df_results = pd.DataFrame({'lower-bound': coef[0], 'upper-bound': coef[1], 
+                                    'ci-low': ci_low, 'ci-up': ci_up},
+                                    index=[contrast])
 
-            
-            G = np.array([-1, 1/3, 1/3, 1/3]) if t == 4 else np.array([-1, 1]) 
-
-
-            self.params_lb = beta_bounds[0]
-            self.params_ub = beta_bounds[1]
-            self.vcov_lb = V_bounds[0]
-            self.vcov_ub = V_bounds[1]
-            self.n = n
-            self.p_hat = p_hat
-            self.group_trimmed = group_trimmed
-            self.alpha_hat = alpha_hat
+        self.params_lb = beta_bounds[0]
+        self.params_ub = beta_bounds[1]
+        self.vcov_lb = V_bounds[0]
+        self.vcov_ub = V_bounds[1]
+        self.summary = df_results
+        self.summary_lb = df_bounds[0]
+        self.summary_ub = df_bounds[1]
+        self.p_hat = p_hat
+        self.group_trimmed = group_trimmed
+        self.alpha_hat = alpha_hat
+        self.quantile_lb = quantile_bounds[0]
+        self.quantile_ub = quantile_bounds[1]
 
 
 def sinv(A):

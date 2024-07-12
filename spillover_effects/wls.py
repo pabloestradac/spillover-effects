@@ -80,6 +80,13 @@ class WLS():
         n = Z.shape[0]
         weights = np.identity(n) if kernel_weights is None else kernel_weights
         # Filter by subsample of interest and nonmissing values
+        if subsample is not None:
+            y = y[subsample]
+            Z = Z[subsample]
+            pscore = pscore[subsample]
+            weights = weights[subsample,:][:,subsample]
+            X = X[subsample]
+            data = data[subsample]
         if name_x is not None:
             missing = data[[name_y] + name_z + name_x].isna().any(axis=1)
         else:
@@ -91,12 +98,6 @@ class WLS():
             pscore = pscore[~missing]
             weights = weights[~missing,:][:,~missing]
             X = X[~missing]
-        if subsample is not None:
-            y = y[subsample]
-            Z = Z[subsample]
-            pscore = pscore[subsample]
-            weights = weights[subsample,:][:,subsample]
-            X = X[subsample]
         # Check for propensity score outside (0.01, 0.99)
         valid = (np.sum(Z*pscore, axis=1) > 0.01) & (np.sum(Z*pscore, axis=1) < 0.99)
         drop_obs = np.sum(~valid)

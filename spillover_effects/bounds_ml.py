@@ -8,12 +8,15 @@ import numpy as np
 import pandas as pd
 from scipy import sparse as spr
 from scipy.stats import norm
+from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold, StratifiedKFold, GridSearchCV
 from sklearn.linear_model import LogisticRegression, LogisticRegressionCV, QuantileRegressor
+from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.utils.fixes import sp_version, parse_version
+from flaml import AutoML
 
 
 class BoundsML():
@@ -67,7 +70,8 @@ class BoundsML():
                 n_splits=5, n_cvs=5,
                 lambdas_proba=np.geomspace(1e-4, 1e4, 10), 
                 lambdas_quant=np.geomspace(1e-4, 1e4, 10), 
-                semi_cf=True, method='parametric', verbose=False, seed=None):
+                semi_cf=True, timestop=60, method='parametric', 
+                verbose=False, seed=None):
 
         # Outcome and treatment exposure
         selection = data[name_s].astype('bool').values
@@ -78,7 +82,7 @@ class BoundsML():
         name_x = [name_x] if isinstance(name_x, str) else name_x
         X = data[name_x].values
         if interaction=='treatment':
-            X = X - X.mean(axis=0)
+            # X = X - X.mean(axis=0)
             X = np.hstack([Z[:, 1:2], X, Z[:, 1:2] * X])
             name_all = [name_z[1]] + name_x + ['treatment*'+cols for cols in name_x]
         elif interaction=='all':
@@ -99,27 +103,29 @@ class BoundsML():
         weights = np.identity(n) if kernel_weights is None else kernel_weights
         # Filter by subsample of interest
         if subsample is not None:
-            y = y[subsample[selection]]
+            Y = Y[subsample[selection]]
             Z = Z[subsample]
             pscore = pscore[subsample]
             selection = selection[subsample]
             weights = weights[subsample,:][:,subsample]
             X = X[subsample]
+            data = data[subsample]
         # Check for propensity score outside (0.01, 0.99)
         valid = (np.sum(Z*pscore, axis=1) > 0.01) & (np.sum(Z*pscore, axis=1) < 0.99)
         drop_obs = np.sum(~valid)
         if drop_obs > 0:
             print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(drop_obs))
-            y = y[valid[selection]]
+            Y = Y[valid[selection]]
             Z = Z[valid]
             pscore = pscore[valid]
             selection = selection[valid]
             weights = weights[valid,:][:,valid]
             X = X[valid]
+            data = data[valid]
         # Calculate trimming probability
         s1, s0, vars_proba = first_stage_proba(data[name_s], X, name_z[1],
                                                n_splits, n_cvs, 1/lambdas_proba,
-                                               semi_cf, method, verbose, seed)
+                                               semi_cf, timestop, method, verbose, seed)
         p0 = s0 / s1
         # Round p0 to be at most 0.99
         p0 = np.where((p0>0.99) & (p0<=1), 0.99, p0)
@@ -199,7 +205,10 @@ class BoundsML():
         neyman = np.array([Y_l1 / (Zs[:, 1]/pscore_s[:, 1]).sum() - Y_l0 / (Zs[:, 0]/pscore_s[:, 0]).sum(),
                            Y_u1 / (Zs[:, 1]/pscore_s[:, 1]).sum() - Y_u0 / (Zs[:, 0]/pscore_s[:, 0]).sum(),
                            AO_share]).T
-        V = Q @ np.cov(neyman, rowvar=False) @ Q.T
+        weights = weights[selection,:][:,selection]
+        # Sigma = neyman.T @ weights @ neyman / ns
+        Sigma = np.cov(neyman, rowvar=False)
+        V = Q @ Sigma @ Q.T
         se = np.sqrt(np.diag(V))
         ci_low = coef[0] - 1.645*se[0]
         ci_up = coef[1] + 1.645*se[1]
@@ -213,9 +222,12 @@ class BoundsML():
         self.vcov = V
         self.vars_proba = vars_proba
         self.vars_quant = vars_quant
+        self.vars_all = name_all
         self.always_observed = AO_share
         self.p0 = p0
         self.q_grid = q_grid
+        self.m_orthog = neyman
+        self.deriv = Q
 
 
 def sinv(A):
@@ -238,7 +250,7 @@ def sinv(A):
     return Ai
 
 
-def first_stage_proba(Y, X, treatment, n_splits, n_cvs, lambdas, semi_cf=True, method='parametric', verbose=False, seed=42):
+def first_stage_proba(Y, X, treatment, n_splits, n_cvs, lambdas, semi_cf=True, timestop=60, method='parametric', verbose=False, seed=42):
     """
     Calculate post-lasso selection probabilities
 
@@ -255,52 +267,80 @@ def first_stage_proba(Y, X, treatment, n_splits, n_cvs, lambdas, semi_cf=True, m
     # Pipeline
     preprocessor = ColumnTransformer(transformers=[('treatment', 'passthrough', [treatment])],
                                      remainder=StandardScaler())
-    logit = Pipeline(steps=[('prep', preprocessor), 
-                            ('clf', LogisticRegression())])
-    if method == 'lasso':
+    if method == 'parametric':
+        clf = Pipeline(steps=[('prep', preprocessor), 
+                                ('clf', LogisticRegression())])
+    elif method == 'lasso':
+        clf = Pipeline(steps=[('prep', preprocessor), 
+                                ('clf', LogisticRegression())])
         logit_cv = Pipeline(steps=[('prep', preprocessor),
                                    ('clf', LogisticRegressionCV(penalty='l1', solver='liblinear', cv=n_cvs, Cs=lambdas))])
         if semi_cf:
             logit_cv.fit(X, Y)
             lambda_best = logit_cv['clf'].C_[0]
+    elif method == 'automl':
+        automl_settings = {'time_budget': timestop, 'metric': 'accuracy', 'task': 'classification',
+            'early_stop': True, 'eval_method': 'cv', 'n_splits': n_cvs,
+            'verbose': 1 if verbose else 0}
+        if semi_cf:
+            automl = Pipeline(steps=[('prep', preprocessor),
+                                    ('automl', AutoML(**automl_settings))])
+            automl.fit(X, Y)
+            clf = Pipeline(steps=[('prep', preprocessor),
+                                  ('clf', clone(automl[-1].best_model_for_estimator(automl[-1].best_estimator)))])
+        else:
+            clf = Pipeline(steps=[('prep', preprocessor),
+                                   ('clf', AutoML(**automl_settings))])
+    else:
+        raise ValueError("Method not recognized. Choose 'parametric', 'lasso' or 'automl'")
+    if verbose:
+        sp_method = 'logit' if method == 'parametric' else 'postlasso-logit' if method == 'lasso' else 'automl'
+        print("Predicted probabilities with method: {}".format(sp_method))
     model_vars = []
     s0, s1 = np.zeros(X.shape[0]), np.zeros(X.shape[0])
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed).split(X, Y) if n_splits > 1 else [(np.arange(X.shape[0]), 
+                                                                                                                 np.arange(X.shape[0]))]
 
-    for train, test in skf.split(X, Y):
+    for train, test in skf:
         if method == 'parametric':
             selected_vars = X.columns.tolist()
             model_vars.append(selected_vars)
-            logit.set_params(clf__penalty=None, clf__solver='newton-cg').fit(X.iloc[train][selected_vars], Y.iloc[train])
-            if verbose:
-                accuracy = logit.score(X.iloc[test][selected_vars], Y.iloc[test])
-                print("Accuracy={:.2f}".format(accuracy))
+            clf.set_params(clf__penalty='l2', clf__solver='newton-cg', clf__C=np.inf).fit(X.iloc[train], Y.iloc[train])
         elif method == 'lasso':
             if semi_cf:
-                logit.set_params(clf__penalty='l1', clf__solver='liblinear', clf__C=lambda_best).fit(X.iloc[train], Y.iloc[train])
+                clf.set_params(clf__penalty='l1', clf__solver='liblinear', clf__C=lambda_best).fit(X.iloc[train], Y.iloc[train])
             else:
                 logit_cv.fit(X.iloc[train], Y.iloc[train])
                 lambda_best = logit_cv['clf'].C_[0]
-                logit.set_params(clf__penalty='l1', clf__solver='liblinear', clf__C=lambda_best).fit(X.iloc[train], Y.iloc[train])
-            logit_coef = logit['clf'].coef_.ravel()
-            selected_vars = logit.feature_names_in_[np.where(logit_coef != 0)[0]].tolist()
+                clf.set_params(clf__penalty='l1', clf__solver='liblinear', clf__C=lambda_best).fit(X.iloc[train], Y.iloc[train])
+            logit_coef = clf['clf'].coef_.ravel()
+            selected_vars = clf.feature_names_in_[np.where(logit_coef != 0)[0]].tolist()
             model_vars.append(selected_vars)
             selected_vars = [treatment] + selected_vars if treatment not in selected_vars else selected_vars
-            logit.set_params(clf__penalty=None, clf__solver='newton-cg').fit(X.iloc[train][selected_vars], Y.iloc[train])
-            if verbose:
-                accuracy = logit.score(X.iloc[test][selected_vars], Y.iloc[test])
-                pct_nonzero = np.mean(logit_coef != 0)*100
-                print("{} ({:.0f}%) selected variables; lambda={:.2f}; accuracy={:.2f}".format(len(selected_vars), 
-                                                                                               pct_nonzero, 1/lambda_best, accuracy))
-        else:
-            raise ValueError("Method not recognized")
+            clf.set_params(clf__penalty='l2', clf__solver='newton-cg', clf__C=np.inf).fit(X.iloc[train][selected_vars], Y.iloc[train])
+        elif method == 'automl':
+            selected_vars = X.columns.tolist()
+            model_vars.append(selected_vars)
+            clf.fit(X.iloc[train], Y.iloc[train])
         # Create treatment and interaction variables
         X1, X0 = X.iloc[test][selected_vars].copy(), X.iloc[test][selected_vars].copy()
         X1[treatment] = 1
         X0[treatment] = 0
         # Predict selection
-        s1[test] = logit.predict_proba(X1)[:, 1]
-        s0[test] = logit.predict_proba(X0)[:, 1]
+        s1[test] = clf.predict_proba(X1)[:, 1]
+        s0[test] = clf.predict_proba(X0)[:, 1]
+        # Print accuracy
+        if verbose:
+            accuracy = clf.score(X.iloc[test][selected_vars], Y.iloc[test])
+            if method == 'parametric':
+                print("accuracy={:.2f}".format(accuracy))
+            elif method == 'lasso':
+                pct_nonzero = np.mean(logit_coef != 0)*100
+                print("{} ({:.1f}%) selected variables; lambda={:.2f}; accuracy={:.2f}".format(len(selected_vars), 
+                                                                                               pct_nonzero, 1/lambda_best, accuracy))
+            elif method == 'automl':
+                clf_best = automl._final_estimator.best_estimator if semi_cf else clf._final_estimator.best_estimator
+                print("{}; accuracy={:.2f}".format(clf_best, accuracy))
 
     return s1, s0, model_vars
 
@@ -321,23 +361,35 @@ def first_stage_quant(Y, X, treatment, n_splits, n_cvs, lambdas, q_grid, semi_cf
 
     # Pipeline
     solver = "highs" if sp_version >= parse_version("1.6.0") else "interior-point"
-    lambdas = {'alpha': lambdas}
     preprocessor = ColumnTransformer(transformers=[('treatment', 'passthrough', [treatment])],
                                      remainder=StandardScaler())
-    qr = Pipeline(steps=[('prep', preprocessor), 
-                         ('reg', QuantileRegressor(solver=solver))])
-    if method == 'lasso':
+    if method == 'parametric':
+        quant = Pipeline(steps=[('prep', preprocessor),
+                                ('reg', QuantileRegressor(solver=solver))])
+    elif method == 'lasso':
+        lambdas = {'alpha': lambdas}
+        quant = Pipeline(steps=[('prep', preprocessor),
+                                ('reg', QuantileRegressor(solver=solver))])
         qr_cv = Pipeline(steps=[('prep', preprocessor),
                                 ('reg', GridSearchCV(QuantileRegressor(solver=solver), lambdas, cv=n_cvs))])
         if semi_cf:
             qr_cv.fit(X, Y)
             lambda_best = qr_cv['reg'].best_params_['alpha']
+    elif method == 'automl':
+        quant = Pipeline(steps=[('prep', preprocessor),
+                                ('reg', GradientBoostingRegressor(loss='quantile'))])
+    else:
+        raise ValueError("Method not recognized. Choose 'parametric', 'lasso' or 'automl'")
+    if verbose:
+        sp_method = 'quantile-reg' if method == 'parametric' else 'postlasso-qr' if method == 'lasso' else 'gradient-boosting'
+        print("Conditional quantiles with method: {}".format(sp_method))
     model_vars = []
     q0, q1 = np.zeros((Y.shape[0], q_grid.size)), np.zeros((Y.shape[0], q_grid.size))
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed).split(X, Y) if n_splits > 1 else [(np.arange(X.shape[0]), 
+                                                                                                      np.arange(X.shape[0]))]
 
-    for train, test in kf.split(X, Y):
-        if not semi_cf:
+    for train, test in kf:
+        if not semi_cf and method == 'lasso':
             qr_cv.fit(X.iloc[train], Y.iloc[train])
             lambda_best = qr_cv['reg'].best_params_['alpha']
 
@@ -345,32 +397,34 @@ def first_stage_quant(Y, X, treatment, n_splits, n_cvs, lambdas, q_grid, semi_cf
             if method == 'parametric':
                 selected_vars = X.columns.tolist()
                 model_vars.append(selected_vars)
-                qr.set_params(reg__quantile=q_grid[q], reg__alpha=0).fit(X.iloc[train][selected_vars], Y.iloc[train])
-                if verbose:
-                    r2 = qr.score(X.iloc[test][selected_vars], Y.iloc[test])
-                    if q_grid[q]*100 in [1, 10, 25, 50, 75, 90, 99]:
-                        print("Q {:.2f}) R2 = {:.2f}".format(q_grid[q], r2))
+                quant.set_params(reg__quantile=q_grid[q], reg__alpha=0).fit(X.iloc[train], Y.iloc[train])
             elif method == 'lasso':
-                qr.set_params(reg__quantile=q_grid[q], reg__alpha=lambda_best).fit(X.iloc[train], Y.iloc[train])
-                qr_coef = qr['reg'].coef_.ravel()
-                selected_vars = qr.feature_names_in_[np.where(qr_coef != 0)[0]].tolist()
+                quant.set_params(reg__quantile=q_grid[q], reg__alpha=lambda_best).fit(X.iloc[train], Y.iloc[train])
+                qr_coef = quant['reg'].coef_.ravel()
+                selected_vars = quant.feature_names_in_[np.where(qr_coef != 0)[0]].tolist()
                 model_vars.append(selected_vars)
                 selected_vars = [treatment] + selected_vars if treatment not in selected_vars else selected_vars
-                qr.set_params(reg__quantile=q_grid[q], reg__alpha=0).fit(X.iloc[train][selected_vars], Y.iloc[train])
-                if verbose:
-                    r2 = qr.score(X.iloc[test][selected_vars], Y.iloc[test])
-                    pct_nonzero = np.mean(qr_coef != 0)*100
-                    if q_grid[q]*100 in [1, 10, 25, 50, 75, 90, 99]:
-                        print("Q {:.2f}) {} ({:.1f}%) selected variables; lambda = {}; R2 = {:.2f}".format(q_grid[q], len(selected_vars), 
-                                                                                                           pct_nonzero, lambda_best, r2))
-            else:
-                raise ValueError("Method not recognized")
+                quant.set_params(reg__quantile=q_grid[q], reg__alpha=0).fit(X.iloc[train][selected_vars], Y.iloc[train])
+            elif method == 'automl':
+                selected_vars = X.columns.tolist()
+                model_vars.append(selected_vars)
+                quant.set_params(reg__alpha=q_grid[q]).fit(X.iloc[train], Y.iloc[train])
             # Create treatment variable
             X1, X0 = X.iloc[test][selected_vars].copy(), X.iloc[test][selected_vars].copy()
             X1[treatment] = 1
             X0[treatment] = 0
             # Predict outcome at the given quantile
-            q1[test, q] = qr.predict(X1)
-            q0[test, q] = qr.predict(X0)
+            q1[test, q] = quant.predict(X1)
+            q0[test, q] = quant.predict(X0)
+            # Print R2
+            if verbose:
+                r2 = quant.score(X.iloc[test][selected_vars], Y.iloc[test])
+                if q_grid[q]*100 in [1, 10, 25, 50, 75, 90, 99]:
+                    if method == 'lasso':
+                        pct_nonzero = np.mean(qr_coef != 0)*100
+                        print("Q {:.2f}) {} ({:.1f}%) selected variables; lambda = {:.2f}; R2 = {:.2f}".format(q_grid[q], len(selected_vars), 
+                                                                                                           pct_nonzero, lambda_best, r2))
+                    else:
+                        print("Q {:.2f}) R2 = {:.2f}".format(q_grid[q], r2))
 
     return np.sort(q1), np.sort(q0), model_vars

@@ -2,6 +2,8 @@
 
 This repository implements weighted least squares (WLS) estimator for spillover effects in randomized experiments. The WLS estimator is based on the work of [Gao and Ding (2023)](https://arxiv.org/abs/2309.07476).
 
+**Work In Progress:** The package also includes bounds for the spillover effects when there are missing outcomes due to endogenous sample selection. This is based on the work of Estrada (2024).
+
 ## Installation
 
 You can install the package via pip:

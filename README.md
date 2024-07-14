@@ -1,8 +1,6 @@
 # Spillover Effects in Randomized Experiments
 
-This repository implements weighted least squares (WLS) estimator for spillover effects in randomized experiments. The WLS estimator is based on the work of [Gao and Ding (2023)](https://arxiv.org/abs/2309.07476).
-
-**Work In Progress:** The package also includes bounds for the spillover effects when there are missing outcomes due to endogenous sample selection. This is based on the work of Estrada (2024).
+This repository implements weighted least squares (WLS) estimators for spillover effects in randomized experiments. The WLS estimator is based on the work of [Gao and Ding (2023)](https://arxiv.org/abs/2309.07476) in the standard case with complete data. The package also includes bounds for the spillover effects when there are missing outcomes. This is based on the work of Estrada (2024).
 
 ## Installation
 
@@ -23,12 +21,8 @@ import spillover_effects as spef
 data, kernel_mat = spef.utils.load_data()
 
 # Estimate spillover effects
-wls_results = spef.WLS(name_y='Y', 
-                       name_z=['exposure0', 'exposure1'], 
-                       name_pscore=['pscore0', 'pscore1'], 
-                       data=data, 
-                       kernel_weights=kernel_mat, 
-                       name_x='X')
+wls_results = spef.WLS(name_y='Y', name_z='exposure', name_pscore='pscore',
+                       data=data, kernel_weights=kernel_mat, name_x='X')
 print(wls_results.summary)
 ```
 
@@ -42,7 +36,25 @@ The output of the previous code is:
 | exposure0*X| -2.08| 0.14 |-14.49 |  0.00 |  -2.37 | -1.80 |
 | exposure1*X| -2.21| 0.11 |-19.57 |  0.00 |  -2.43 | -1.99 |
 
-The two inputs that the WLS class requires are a pandas DataFrame with the data and a sparse matrix for the kernel weights. The package provides helper functions to calculate the propensity score (pscore column), spillover exposure (exposure column), and kernel weights (sparse matrix) for the WLS estimator. Detailed examples can be found in the [examples](https://github.com/pabloestradac/spillover-effects/blob/main/example.ipynb) notebook. 
+When the outcome has missing values, the package allows to calculate bounds for the spillover effects. The following example demonstrates how to use the package:
+
+```python
+# Estimate spillover bounds
+wls_bounds = spef.BoundsML((name_y='Y', name_z='exposure', name_pscore='pscore',
+                            name_x=name_covariates, data=data, kernel_weights=distances,
+                            n_splits=10, n_cvs=10, method='automl')
+print(wls_bounds.summary)
+```
+
+The output of the previous code is:
+
+Warning: 170 observations have missing values (127 missing outcomes)
+Warning: 34 observations have propensity scores outside (0.01, 0.99)
+|           | lower-bound | upper-bound | ci-low | ci-up |
+|-----------|------------:|------------:|-------:|------:|
+| spillover |        0.21 |        0.28 |   0.12 |  0.32 |
+
+The two inputs that the WLS class requires are a pandas DataFrame with the data and a sparse matrix for the kernel weights. The package provides helper functions to calculate the propensity score (pscore column), spillover exposure (exposure column), and kernel weights (sparse matrix) for the WLS estimator. Detailed examples can be found in the [WLS Examples](https://github.com/pabloestradac/spillover-effects/blob/main/example_wls.ipynb) and [Bounds Examples](https://github.com/pabloestradac/spillover-effects/blob/main/example_bounds.ipynb) notebooks.
 
 The two data structures the user needs to use this package are 1) the data and 2) the edge list. The data should be a pandas DataFrame with columns such as:
 
@@ -60,6 +72,6 @@ The edge list should be a pandas DataFrame with up to $K+1$ columns where $K$ is
 | 2         | 1          | 3          | ... | 4          |
 | 3         | 1          | 2          | ... | 4          |
 
-An important note is to avoid selecting subsets of the data and distance matrix before running the WLS estimator. Instead use option `subsample` in the `WLS` class to select a subset of the data. This will ensure that the distances between $i$ and $j$ are calculated correctly.
+An important note is to avoid selecting subsets of the data and distance matrix before running the WLS estimator. Instead use option `subsample` to select a subset of the data. This will ensure that the distances between $i$ and $j$ are calculated correctly.
  
 <!-- https://github.com/MichaelKim0407/tutorial-pip-package?tab=readme-ov-file -->

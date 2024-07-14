@@ -35,8 +35,11 @@ def adjacency_matrix(edges, directed=True, nodes=None):
     # Check for repeated (i,j) and (j,i) edges when undirected
     if not directed:
         data = pd.DataFrame({tuple(sorted(i)): i for i in data.values}.values())
-    # Get unique nodes
-    nodes = edges.stack().unique() if nodes is None else nodes
+    # Get unique nodes and drop edges not in nodes
+    if nodes is None:
+        nodes = edges.stack().unique()
+    else:
+        data = data[data[0].isin(nodes) & data[1].isin(nodes)]
     n = len(nodes)
     # Create mapping of nodes to indices
     nodes_map = {nodes[i]: str(i) for i in range(n)}
@@ -71,7 +74,7 @@ def spillover_treatment(treatment, A, interaction=False):
                           treatment     * spillover]).T
     else:
         spillover = ((A @ treatment) > 0) * 1
-        return np.vstack([1-spillover, spillover]).T
+        return spillover
 
 
 def spillover_pscore(A, n_treated, blocks=None, matrix=False):
@@ -84,14 +87,16 @@ def spillover_pscore(A, n_treated, blocks=None, matrix=False):
                 n x n adjacency matrix
     n_treated : int
                 Number of treated individuals in the block
-    blocks    : array
-                n x 1 array of block assignments, k unique blocks
+    blocks    : pandas Series
+                n x 1 array of block assignment
     matrix    : bool
                 Whether to return the matrix of propensity scores
     """
     n = A.shape[0]
+    if spr.issparse(A):
+        A = A.toarray().astype(int)
     if blocks is None:
-        # Protocol: all students are in the same block
+        # Protocol: all units (students) are in the same block (school)
         degree = A @ np.ones(n)
         pscore_spillover = 1 - hypergeom(n, n_treated, degree).pmf(0)
         pscore_direct = n_treated / n
@@ -99,16 +104,16 @@ def spillover_pscore(A, n_treated, blocks=None, matrix=False):
     else:
         # Protocol: propensity score by blocks, e.g., classrooms
         unique_blocks = blocks.unique()
-        # Each row is a vector giving the number of friends of each student that are in classroom k
+        # Each row is a vector giving the number of friends of each unit (student) that are in block (classroom) k
         degree_by_block = np.vstack([A @ (blocks==k).values for k in unique_blocks])
-        # 174 blocks (classrooms) of x students, 4 treated
+        # K blocks (classrooms) of n_k units (students), n_treated in each block
         blocks_size = blocks.value_counts().loc[unique_blocks].values
-        k = len(unique_blocks)
-        p0_block = np.zeros((k, n))
-        # Probability of having zero treated friends out of the x students in the k classroom
-        for i in range(k):
-            p0_block[i, :] = hypergeom(blocks_size[i], n_treated, degree_by_block[i, :]).pmf(0)
-        pscore_spillover = 1 - p0_block.prod(axis=0)
+        K = len(unique_blocks)
+        p0_block = np.zeros((K, n))
+        # Probability of having zero treated friends out of the n_k units in the k block
+        for k in range(K):
+            p0_block[k, :] = hypergeom(blocks_size[k], n_treated, degree_by_block[k, :]).pmf(0)
+        pscore_spillover = 1 - p0_block.prod(axis=0) # product across k classrooms
         pscore_direct = [n_treated / blocks.value_counts().loc[i] for i in blocks]
     if matrix:
         return np.vstack([(1-pscore_direct) * (1-pscore_spillover), 
@@ -116,10 +121,10 @@ def spillover_pscore(A, n_treated, blocks=None, matrix=False):
                           pscore_direct     * (1-pscore_spillover), 
                           pscore_direct     * pscore_spillover]).T
     else:
-        return np.vstack([1-pscore_spillover, pscore_spillover]).T
+        return pscore_spillover
 
 
-def kernel(A, bw):
+def kernel(A, bw=-1, K=1):
     """
     Kernel matrix for covariance estimation
 
@@ -128,19 +133,30 @@ def kernel(A, bw):
     A         : array
                 n x n adjacency matrix
     bw        : int
-                Bandwidth to calculate kernel matrix
+                If negative, use optimal bandwidth
+    K         : int
+                K-neighborhood exposure
     """
-    if spr.issparse(A):
-        A = A.toarray()
+    # if spr.issparse(A):
+    #     A = A.toarray().astype(int)
+    n = A.shape[0]
     # Calculate shortest path distance matrix
     dist_matrix = spr.csgraph.dijkstra(csgraph=A, directed=False, unweighted=True)
+    _, labels = spr.csgraph.connected_components(csgraph=A, directed=False, return_labels=True)
+    unique, counts = np.unique(labels, return_counts=True)
+    Gcc_label = unique[np.argmax(counts)]
+    APL = dist_matrix[labels == Gcc_label, :][:, labels == Gcc_label].sum() / counts.max() / (counts.max() - 1)
+    avg_deg = A.sum() / n
+    if bw < 0:
+        bw = round(APL/2) if APL < 2*np.log(n)/np.log(avg_deg) else round(APL**(1/3))
+        bw = max(2*K, bw)
     # Calculate kernel matrix
     weights = (dist_matrix <= bw) * 1
     # Check for negative eigenvalues
     eigenvalues, eigenvectors = np.linalg.eigh(weights)
     if eigenvalues[0] < 0:
         weights = eigenvectors @ np.diag(np.maximum(eigenvalues, 0)) @ eigenvectors.T
-    return weights
+    return weights, bw
 
 
 def load_data():
@@ -152,7 +168,7 @@ def load_data():
     data = pd.read_csv(path_data + 'data.csv')
     A, nodes = adjacency_matrix(edges, directed=True)
     data = data.set_index('node').loc[nodes].reset_index()
-    data[['pscore0', 'pscore1']] = spillover_pscore(A, data['D'].sum())
-    data[['exposure0', 'exposure1']] = spillover_treatment(data['D'], A)
+    data['pscore'] = spillover_pscore(A, data['D'].sum())
+    data['exposure'] = spillover_treatment(data['D'], A)
     distances = kernel(A, 3)
     return data, distances

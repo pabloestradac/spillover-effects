@@ -1,5 +1,5 @@
 """
-WLS Estimation of Spillover Bounds
+WLS Estimation of Spillover Bounds with Covariates
 """
 
 __author__ = """ Pablo Estrada pabloestradace@gmail.com """
@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse as spr
 from scipy.stats import norm
+from scipy.optimize import root_scalar
 from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
@@ -27,29 +28,49 @@ class BoundsML():
     ----------
     name_y        : str
                     Name of the outcome variable
-    name_s        : str
-                    Name of the selection variable
     name_z        : str or list
                     Name of the treatment exposure variable(s)
-    name_pscore   : str
-                    Name of the propensity score variable
+    name_pscore   : str or list
+                    Name of the propensity score variable(s)
+    name_x        : str or list
+                    Name of covariate(s)
     data          : DataFrame
                     Data containing the variables of interest
     kernel_weights: array
                     Kernel weights for the estimation
-    name_x        : str or list
-                    Name of covariate(s)
-    interaction   : bool
-                    Whether to include interaction terms between Z and X
     subsample     : boolean array
                     Subsample of observations to consider
+    interaction   : bool
+                    Whether to include interaction terms between Z and X
     contrast      : str
                     Type of contrast to estimate (direct or spillover)
+    method        : str
+                    Method for selection and quantile (parametric, lasso, automl)
+    n_splits      : int
+                    Number of splits for cross-fitting
+    n_cvs         : int
+                    Number of cross-validation folds
+    lambdas_proba : array
+                    Grid of lambdas for selection probabilities, if method is 'lasso'
+    lambdas_quant : array
+                    Grid of lambdas for quantile regressions, if method is 'lasso'
+    semi_cf       : bool
+                    Whether to use the semi cross-fitting: cv=1 (1-fold)
+    timestop      : int
+                    Time budget for automl
+    alpha         : float
+                    Significance level
+    verbose       : bool
+                    Whether to print progress and metrics
+    seed          : int
+                    Random seed for cross-validation and cross-fitting
 
     Attributes
     ----------
-    params        : array
-                    WLS coefficients
+    params_lb     : array
+                    Lower bound of the spillover effect
+    params_ub     : array
+                    Upper bound of the spillover effect
     vcov          : array
                     Variance covariance matrix
     summary       : DataFrame
@@ -58,38 +79,64 @@ class BoundsML():
 
     def __init__(self,
                 name_y,
-                name_s,
                 name_z,
                 name_pscore,
                 name_x,
                 data,
                 kernel_weights=None,
                 subsample=None,
-                interaction='treatment',
+                interaction='none',
                 contrast='spillover',
-                n_splits=5, n_cvs=5,
-                lambdas_proba=np.geomspace(1e-4, 1e4, 10), 
-                lambdas_quant=np.geomspace(1e-4, 1e4, 10), 
-                semi_cf=True, timestop=60, method='parametric', 
-                verbose=False, seed=None):
+                method='parametric', n_splits=5, n_cvs=5,
+                semi_cf=True, timestop=60, 
+                lambdas_proba=np.geomspace(1e-4, 1e4, 10),
+                lambdas_quant=np.geomspace(1e-4, 1e4, 10),
+                alpha=0.05, verbose=False, seed=None):
 
+        # Kernel matrix
+        n = data.shape[0]
+        weights = np.identity(n) if kernel_weights is None else kernel_weights
+        # Filter by subsample of interest and nonmissing values on covariates
+        if subsample is not None:
+            print('Warning: Filtering by subsample of {} observations'.format(subsample.sum()))
+            weights = weights[subsample,:][:,subsample]
+            data = data[subsample].copy()
+        name_x = [name_x] if isinstance(name_x, str) else name_x
+        if isinstance(name_z, str):
+            data[name_z+'0'] = 1 - data[name_z]
+            data = data.rename(columns={name_z: name_z+'1'})
+            name_z = [name_z+'0', name_z+'1']
+        missing = data[name_z + name_x].isna().any(axis=1)
+        missy = data[name_y].isna().sum()
+        if missing.sum() > 0: 
+            print('Warning: {} observations have missing values ({} missing outcomes)'.format(missing.sum(), missy))
+            weights = weights[~missing,:][:,~missing]
+            data = data[~missing].copy()
+        # Check for propensity score outside (0.01, 0.99)
+        if isinstance(name_pscore, str):
+            psvals = data[name_pscore].values
+            data[name_pscore+'0'] = 1 - psvals
+            data = data.rename(columns={name_pscore: name_pscore+'1'})
+            name_pscore = [name_pscore+'0', name_pscore+'1']
+        full_pscores = data[name_z].values * data[name_pscore].values
+        valid = (np.sum(full_pscores, axis=1) > 0.01) & (np.sum(full_pscores, axis=1) < 0.99)
+        if np.sum(~valid) > 0:
+            print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(np.sum(~valid)))
+            weights = weights[valid,:][:,valid]
+            data = data[valid].copy()
         # Outcome and treatment exposure
-        selection = data[name_s].astype('bool').values
-        Y = data.loc[selection, name_y].values
+        selection = (~data[name_y].isna()).values
+        data['selection'] = selection * 1
         Z = data[name_z].values
         pscore = data[name_pscore].values
         # Create interated matrix X
-        name_x = [name_x] if isinstance(name_x, str) else name_x
         X = data[name_x].values
         if interaction=='treatment':
-            # X = X - X.mean(axis=0)
             X = np.hstack([Z[:, 1:2], X, Z[:, 1:2] * X])
             name_all = [name_z[1]] + name_x + ['treatment*'+cols for cols in name_x]
         elif interaction=='all':
             k = X.shape[1]
             XX = np.hstack([X[:, i:i+1] * X[:, j:j+1] for i in range(k) for j in range(k) if i != j])
-            X = X - X.mean(axis=0)
-            XX = XX - XX.mean(axis=0)
             X = np.hstack([Z[:, 1:2], X, Z[:, 1:2] * X, Z[:, 1:2] * XX])
             name_xx = ['{}*{}'.format(name_x[i], name_x[j]) for i in range(k) for j in range(k) if i != j]
             name_all = [name_z[1]] + name_x + ['treatment*'+cols for cols in name_x] + ['treatment*'+cols for cols in name_xx]
@@ -98,32 +145,8 @@ class BoundsML():
             X = np.hstack([Z[:, 1:2], X])
             name_all = [name_z[1]] + name_x
         X = pd.DataFrame(X, columns=name_all)
-        # Kernel matrix
-        n = Z.shape[0]
-        weights = np.identity(n) if kernel_weights is None else kernel_weights
-        # Filter by subsample of interest
-        if subsample is not None:
-            Y = Y[subsample[selection]]
-            Z = Z[subsample]
-            pscore = pscore[subsample]
-            selection = selection[subsample]
-            weights = weights[subsample,:][:,subsample]
-            X = X[subsample]
-            data = data[subsample]
-        # Check for propensity score outside (0.01, 0.99)
-        valid = (np.sum(Z*pscore, axis=1) > 0.01) & (np.sum(Z*pscore, axis=1) < 0.99)
-        drop_obs = np.sum(~valid)
-        if drop_obs > 0:
-            print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(drop_obs))
-            Y = Y[valid[selection]]
-            Z = Z[valid]
-            pscore = pscore[valid]
-            selection = selection[valid]
-            weights = weights[valid,:][:,valid]
-            X = X[valid]
-            data = data[valid]
         # Calculate trimming probability
-        s1, s0, vars_proba = first_stage_proba(data[name_s], X, name_z[1],
+        s1, s0, vars_proba = first_stage_proba(data['selection'], X, name_z[1],
                                                n_splits, n_cvs, 1/lambdas_proba,
                                                semi_cf, timestop, method, verbose, seed)
         p0 = s0 / s1
@@ -148,6 +171,7 @@ class BoundsML():
             p0 = np.where(p0<1.001, 1.001, p0)
         # Calculate quantile at the trimming probabilities
         ns = np.sum(selection)
+        Y = data.loc[selection, name_y].values
         Zs = Z[selection]
         Xs = X.iloc[selection]
         pscore_s = pscore[selection]
@@ -192,12 +216,12 @@ class BoundsML():
         Yhat_lb = ZWZi @ Zs.T @ W @ (Y_lb)
         Yhat_ub = ZWZi @ Zs.T @ W @ (Y_ub)
         # Share of always-observed individuals
-        AO_share = np.zeros(ns)
-        if ind_helps.sum() > 0:
-            AO_share[ind_helps] = (Zs[:, 0]*(1-s0s)/pscore_s[:, 0] + s0s)[ind_helps]
-        if ind_hurts.sum() > 0:
-            AO_share[ind_hurts] = (Zs[:, 1]*(1-s1s)/pscore_s[:, 1] + s1s)[ind_hurts]
-        # AO_share = np.mean(np.vstack([s0s, s1s]).min(axis=0))
+        # AO_share = np.zeros(ns)
+        # if ind_helps.sum() > 0:
+        #     AO_share[ind_helps] = (Zs[:, 0]*(1-s0s)/pscore_s[:, 0] + s0s)[ind_helps]
+        # if ind_hurts.sum() > 0:
+        #     AO_share[ind_hurts] = (Zs[:, 1]*(1-s1s)/pscore_s[:, 1] + s1s)[ind_hurts]
+        AO_share = np.vstack([s0s, s1s]).min(axis=0)
         coef = np.array([G @ Yhat_lb / np.mean(AO_share), G @ Yhat_ub / np.mean(AO_share)])
         coef = np.sort(coef)
         # Variance
@@ -206,12 +230,14 @@ class BoundsML():
                            Y_u1 / (Zs[:, 1]/pscore_s[:, 1]).sum() - Y_u0 / (Zs[:, 0]/pscore_s[:, 0]).sum(),
                            AO_share]).T
         weights = weights[selection,:][:,selection]
-        # Sigma = neyman.T @ weights @ neyman / ns
-        Sigma = np.cov(neyman, rowvar=False)
+        neyman_dm = neyman - neyman.mean(axis=0)
+        Sigma = neyman_dm.T @ weights @ neyman_dm / ns
+        # Sigma = np.cov(neyman, rowvar=False)
         V = Q @ Sigma @ Q.T
         se = np.sqrt(np.diag(V))
-        ci_low = coef[0] - 1.645*se[0]
-        ci_up = coef[1] + 1.645*se[1]
+        cval = root_scalar(IM_formula, args=(n, coef, se, alpha), bracket=[0, 5], method='brentq').root
+        ci_low = coef[0] - cval*se[0]
+        ci_up = coef[1] + cval*se[1]
         df_results = pd.DataFrame({'lower-bound': coef[0], 'upper-bound': coef[1], 
                                     'ci-low': ci_low, 'ci-up': ci_up},
                                     index=[contrast])
@@ -225,9 +251,14 @@ class BoundsML():
         self.vars_all = name_all
         self.always_observed = AO_share
         self.p0 = p0
-        self.q_grid = q_grid
-        self.m_orthog = neyman
-        self.deriv = Q
+
+
+def IM_formula(Cn, n, coef, se, alpha):
+    """
+    Imbens and Manski (2004) formula for the critical value
+    """
+    term = np.sqrt(n) * (coef[1] - coef[0]) / max(se[1], se[0])
+    return norm.cdf(Cn + term) - norm.cdf(-Cn) - (1-alpha)
 
 
 def sinv(A):

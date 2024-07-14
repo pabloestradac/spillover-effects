@@ -20,8 +20,8 @@ class WLS():
                     Name of the outcome variable
     name_z        : str or list
                     Name of the treatment exposure variable(s)
-    name_pscore   : str
-                    Name of the propensity score variable
+    name_pscore   : str or list
+                    Name of the propensity score variable(s)
     data          : DataFrame
                     Data containing the variables of interest
     kernel_weights: array
@@ -59,16 +59,49 @@ class WLS():
                 contrast='spillover',
                 alpha = 0.05):
 
+        # Kernel matrix
+        n = data.shape[0]
+        weights = np.identity(n) if kernel_weights is None else kernel_weights
+        # Filter by subsample of interest and nonmissing values
+        if subsample is not None:
+            print('Warning: Filtering by subsample of {} observations'.format(subsample.sum()))
+            weights = weights[subsample,:][:,subsample]
+            data = data[subsample].copy()
+        name_x = [name_x] if isinstance(name_x, str) else name_x
+        if isinstance(name_z, str):
+            data[name_z+'0'] = 1 - data[name_z]
+            data = data.rename(columns={name_z: name_z+'1'})
+            name_z = [name_z+'0', name_z+'1']
+        if name_x is not None:
+            missing = data[[name_y] + name_z + name_x].isna().any(axis=1)
+        else:
+            missing = data[[name_y] + name_z].isna().any(axis=1)
+        missy = data[name_y].isna().sum()
+        if missing.sum() > 0: 
+            print('Warning: {} observations have missing values ({} missing outcomes)'.format(missing.sum(), missy))
+            weights = weights[~missing,:][:,~missing]
+            data = data[~missing].copy()
+        # Check for propensity score outside (0.01, 0.99)
+        if isinstance(name_pscore, str):
+            psvals = data[name_pscore].values
+            data[name_pscore+'0'] = 1 - psvals
+            data = data.rename(columns={name_pscore: name_pscore+'1'})
+            name_pscore = [name_pscore+'0', name_pscore+'1']
+        full_pscores = data[name_z].values * data[name_pscore].values
+        valid = (np.sum(full_pscores, axis=1) > 0.01) & (np.sum(full_pscores, axis=1) < 0.99)
+        if np.sum(~valid) > 0:
+            print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(np.sum(~valid)))
+            weights = weights[valid,:][:,valid]
+            data = data[valid].copy()
         # Outcome and treatment exposure
         y = data[name_y].values
         Z = data[name_z].values
         pscore = data[name_pscore].values
         # Standardize or create matrix X
         t = Z.shape[1]
-        name_x = [name_x] if isinstance(name_x, str) else name_x
         X = data[name_x].values if name_x is not None else None
         if X is not None:
-            X = (X - X.mean(axis=0)) # / X.std(axis=0)
+            X = (X - np.mean(X, axis=0))
             if interaction:
                 ZX = np.hstack([Z[:, i:i+1] * X for i in range(t)])
                 X = np.hstack((Z, ZX))
@@ -76,38 +109,6 @@ class WLS():
                 X = np.hstack((Z, X))
         else:
             X = Z.copy()
-        # Kernel matrix
-        n = Z.shape[0]
-        weights = np.identity(n) if kernel_weights is None else kernel_weights
-        # Filter by subsample of interest and nonmissing values
-        if subsample is not None:
-            y = y[subsample]
-            Z = Z[subsample]
-            pscore = pscore[subsample]
-            weights = weights[subsample,:][:,subsample]
-            X = X[subsample]
-            data = data[subsample]
-        if name_x is not None:
-            missing = data[[name_y] + name_z + name_x].isna().any(axis=1)
-        else:
-            missing = data[[name_y] + name_z].isna().any(axis=1)
-        if missing.sum() > 0: 
-            print('Warning: {} observations have missing values'.format(missing.sum()))
-            y = y[~missing]
-            Z = Z[~missing]
-            pscore = pscore[~missing]
-            weights = weights[~missing,:][:,~missing]
-            X = X[~missing]
-        # Check for propensity score outside (0.01, 0.99)
-        valid = (np.sum(Z*pscore, axis=1) > 0.01) & (np.sum(Z*pscore, axis=1) < 0.99)
-        drop_obs = np.sum(~valid)
-        if drop_obs > 0:
-            print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(drop_obs))
-            y = y[valid]
-            Z = Z[valid]
-            pscore = pscore[valid]
-            weights = weights[valid,:][:,valid]
-            X = X[valid]
         # Weight with propensity score
         W = np.diag(1 / np.sum(Z*pscore, axis=1))
         # Fit WLS
@@ -144,6 +145,11 @@ class WLS():
         self.params = beta
         self.vcov = V
         self.summary = df_results
+        self.X = X
+        self.y = y
+        self.Z = Z
+        self.pscore = pscore
+        self.W = W
 
 
 

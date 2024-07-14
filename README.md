@@ -48,7 +48,7 @@ print(wls_bounds.summary)
 
 The output of the previous code is:
 
-Warning: 170 observations have missing values (127 missing outcomes)
+Warning: 170 observations have missing values (127 missing outcomes)\
 Warning: 34 observations have propensity scores outside (0.01, 0.99)
 |           | lower-bound | upper-bound | ci-low | ci-up |
 |-----------|------------:|------------:|-------:|------:|

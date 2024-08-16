@@ -1,6 +1,7 @@
 # Spillover Effects in Randomized Experiments
 
-This repository implements weighted least squares (WLS) estimators for spillover effects in randomized experiments. The WLS estimator is based on the work of [Gao and Ding (2023)](https://arxiv.org/abs/2309.07476) in the standard case with complete data. The package also includes bounds for the spillover effects when there are missing outcomes. This is based on the work of Estrada (2024).
+This repository implements weighted least squares (WLS) estimators for spillover effects in randomized experiments. The WLS estimator is based on the work of [Gao and Ding (2023)](https://arxiv.org/abs/2309.07476) in the standard case with complete data. The package also includes bounds for the spillover effects when there are missing outcomes. This is based on the work of [Estrada (2024)](https://github.com/pabloestradac/Spillover_Bounds).
+
 
 ## Installation
 
@@ -54,7 +55,7 @@ Warning: 34 observations have propensity scores outside (0.01, 0.99)
 |-----------|------------:|------------:|-------:|------:|
 | spillover |        0.21 |        0.28 |   0.12 |  0.32 |
 
-The two inputs that the WLS class requires are a pandas DataFrame with the data and a sparse matrix for the kernel weights. The package provides helper functions to calculate the propensity score (pscore column), spillover exposure (exposure column), and kernel weights (sparse matrix) for the WLS estimator. Detailed examples can be found in the [WLS Examples](https://github.com/pabloestradac/spillover-effects/blob/main/example_wls.ipynb) and [Bounds Examples](https://github.com/pabloestradac/spillover-effects/blob/main/example_bounds.ipynb) notebooks.
+The two inputs that the WLS class requires are a pandas DataFrame with the data and a sparse matrix for the kernel weights. The package provides helper functions to calculate the propensity score (pscore column), spillover exposure (exposure column), and kernel weights (sparse matrix) for the WLS estimator. Detailed examples can be found in the [WLS Examples](notebooks/example_wls.ipynb) and [Bounds Examples](notebooks/example_bounds.ipynb) notebooks.
 
 The two data structures the user needs to use this package are 1) the data and 2) the edge list. The data should be a pandas DataFrame with columns such as:
 

@@ -22,7 +22,7 @@ class WLS():
                     Name of the treatment exposure variable(s)
     name_pscore   : str or list
                     Name of the propensity score variable(s)
-    data          : DataFrame
+    dataframe     : DataFrame
                     Data containing the variables of interest
     kernel_weights: array
                     Kernel weights for the estimation
@@ -36,6 +36,8 @@ class WLS():
                     Type of contrast to estimate (direct or spillover)
     alpha         : float
                     Significance level
+    warn          : bool
+                    Whether to print warnings
 
     Attributes
     ----------
@@ -51,20 +53,21 @@ class WLS():
                 name_y,
                 name_z,
                 name_pscore,
-                data,
+                dataframe,
                 kernel_weights=None,
                 name_x=None,
                 interaction=True,
                 subsample=None,
                 contrast='spillover',
-                alpha = 0.05):
+                alpha = 0.05, warn=True):
 
         # Kernel matrix
+        data = dataframe.copy()
         n = data.shape[0]
         weights = np.identity(n) if kernel_weights is None else kernel_weights
         # Filter by subsample of interest and nonmissing values
         if subsample is not None:
-            print('Warning: Filtering by subsample of {} observations'.format(subsample.sum()))
+            print('Warning: Filtering by subsample of {} observations'.format(subsample.sum())) if warn else None
             weights = weights[subsample,:][:,subsample]
             data = data[subsample].copy()
         name_x = [name_x] if isinstance(name_x, str) else name_x
@@ -78,7 +81,7 @@ class WLS():
             missing = data[[name_y] + name_z].isna().any(axis=1)
         missy = data[name_y].isna().sum()
         if missing.sum() > 0: 
-            print('Warning: {} observations have missing values ({} missing outcomes)'.format(missing.sum(), missy))
+            print('Warning: {} observations have missing values ({} missing outcomes)'.format(missing.sum(), missy)) if warn else None
             weights = weights[~missing,:][:,~missing]
             data = data[~missing].copy()
         # Check for propensity score outside (0.01, 0.99)
@@ -90,7 +93,7 @@ class WLS():
         full_pscores = data[name_z].values * data[name_pscore].values
         valid = (np.sum(full_pscores, axis=1) > 0.01) & (np.sum(full_pscores, axis=1) < 0.99)
         if np.sum(~valid) > 0:
-            print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(np.sum(~valid)))
+            print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(np.sum(~valid))) if warn else None
             weights = weights[valid,:][:,valid]
             data = data[valid].copy()
         # Outcome and treatment exposure

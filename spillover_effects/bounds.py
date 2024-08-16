@@ -23,7 +23,7 @@ class Bounds():
                     Name of the treatment exposure variable(s)
     name_pscore   : str or list
                     Name of the propensity score variable(s)
-    data          : DataFrame
+    dataframe     : DataFrame
                     Data containing the variables of interest
     kernel_weights: array
                     Kernel weights for the estimation
@@ -35,6 +35,10 @@ class Bounds():
                     Subsample of observations to consider
     contrast      : str
                     Type of contrast to estimate (direct or spillover)
+    alpha         : float
+                    Significance level
+    warn          : bool
+                    Whether to print warnings
 
     Attributes
     ----------
@@ -54,20 +58,21 @@ class Bounds():
                 name_y,
                 name_z,
                 name_pscore,
-                data,
+                dataframe,
                 kernel_weights=None,
                 name_x=None,
                 interaction=True,
                 subsample=None,
                 contrast='spillover',
-                alpha = 0.05):
+                alpha = 0.05, warn=True):
 
         # Kernel matrix
+        data = dataframe.copy()
         n = data.shape[0]
         weights = np.identity(n) if kernel_weights is None else kernel_weights
         # Filter by subsample of interest and nonmissing values on covariates
         if subsample is not None:
-            print('Warning: Filtering by subsample of {} observations'.format(subsample.sum()))
+            print('Warning: Filtering by subsample of {} observations'.format(subsample.sum())) if warn else None
             weights = weights[subsample,:][:,subsample]
             data = data[subsample].copy()
         name_x = [name_x] if isinstance(name_x, str) else name_x
@@ -76,14 +81,16 @@ class Bounds():
             data = data.rename(columns={name_z: name_z+'1'})
             name_z = [name_z+'0', name_z+'1']
         if name_x is not None:
-            missing = data[name_z + name_x].isna().any(axis=1)
+            missing = data[[name_y] + name_z + name_x].isna().any(axis=1)
+            missx = data[name_z + name_x].isna().any(axis=1)
         else:
-            missing = data[name_z].isna().any(axis=1)
+            missing = data[[name_y] + name_z].isna().any(axis=1)
+            missx = data[name_z].isna().any(axis=1)
         missy = data[name_y].isna().sum()
         if missing.sum() > 0: 
-            print('Warning: {} observations have missing values ({} missing outcomes)'.format(missing.sum(), missy))
-            weights = weights[~missing,:][:,~missing]
-            data = data[~missing].copy()
+            print('Warning: {} observations have missing values ({} missing outcomes)'.format(missing.sum(), missy)) if warn else None
+            weights = weights[~missx,:][:,~missx]
+            data = data[~missx].copy()
         # Check for propensity score outside (0.01, 0.99)
         if isinstance(name_pscore, str):
             psvals = data[name_pscore].values
@@ -93,7 +100,7 @@ class Bounds():
         full_pscores = data[name_z].values * data[name_pscore].values
         valid = (np.sum(full_pscores, axis=1) > 0.01) & (np.sum(full_pscores, axis=1) < 0.99)
         if np.sum(~valid) > 0:
-            print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(np.sum(~valid)))
+            print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(np.sum(~valid))) if warn else None
             weights = weights[valid,:][:,valid]
             data = data[valid].copy()
         # Outcome and treatment exposure

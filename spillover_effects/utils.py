@@ -32,6 +32,11 @@ def adjacency_matrix(edges, directed=True, nodes=None):
         data_j = edges.iloc[:, [0, j]].dropna()
         data_j.columns = [0, 1]
         data = pd.concat([data, data_j], ignore_index=True)
+    # Remove self-loops
+    self_loops = data[0] == data[1]
+    if self_loops.sum() > 0:
+        data = data[~self_loops]
+        print('Removed {} self-loops'.format(self_loops.sum()))
     # Check for repeated (i,j) and (j,i) edges when undirected
     if not directed:
         data = pd.DataFrame({tuple(sorted(i)): i for i in data.values}.values())
@@ -77,7 +82,7 @@ def spillover_treatment(treatment, A, interaction=False):
         return spillover
 
 
-def spillover_pscore(A, n_treated, blocks=None, matrix=False):
+def spillover_pscore(A, treated, blocks=None, exposure='spillover'):
     """
     Compute the propensity score of having at least one friend treated
 
@@ -85,12 +90,12 @@ def spillover_pscore(A, n_treated, blocks=None, matrix=False):
     ----------
     A         : array
                 n x n adjacency matrix
-    n_treated : int
-                Number of treated individuals in the block
+    treated   : float
+                Number or fraction of treated individuals in the block
     blocks    : pandas Series
                 n x 1 array of block assignment
-    matrix    : bool
-                Whether to return the matrix of propensity scores
+    exposure  : str
+                Type of exposure mapping (spillover, direct, interaction)
     """
     n = A.shape[0]
     if spr.issparse(A):
@@ -98,9 +103,10 @@ def spillover_pscore(A, n_treated, blocks=None, matrix=False):
     if blocks is None:
         # Protocol: all units (students) are in the same block (school)
         degree = A @ np.ones(n)
+        n_treated = round(treated * n) if treated < 1 else treated
         pscore_spillover = 1 - hypergeom(n, n_treated, degree).pmf(0)
+        # pscore_spillover = 1 - binom(degree, treated).pmf(0)
         pscore_direct = n_treated / n
-        # pscore0_spillover = binom(degree, pscore0_direct).pmf(0)
     else:
         # Protocol: propensity score by blocks, e.g., classrooms
         unique_blocks = blocks.unique()
@@ -112,16 +118,21 @@ def spillover_pscore(A, n_treated, blocks=None, matrix=False):
         p0_block = np.zeros((K, n))
         # Probability of having zero treated friends out of the n_k units in the k block
         for k in range(K):
+            n_treated = round(treated * blocks_size[k]) if treated < 1 else treated
             p0_block[k, :] = hypergeom(blocks_size[k], n_treated, degree_by_block[k, :]).pmf(0)
         pscore_spillover = 1 - p0_block.prod(axis=0) # product across k classrooms
-        pscore_direct = [n_treated / blocks.value_counts().loc[i] for i in blocks]
-    if matrix:
-        return np.vstack([(1-pscore_direct) * (1-pscore_spillover), 
-                          (1-pscore_direct) * pscore_spillover, 
-                          pscore_direct     * (1-pscore_spillover), 
+        pscore_direct = [n_treated / blocks.value_counts().loc[i] for i in blocks] if treated >= 1 else [treated] * n
+    if exposure == 'spillover':
+        return pscore_spillover
+    elif exposure == 'direct':
+        return pscore_direct
+    elif exposure == 'interaction':
+        return np.vstack([(1-pscore_direct) * (1-pscore_spillover),
+                          (1-pscore_direct) * pscore_spillover,
+                          pscore_direct     * (1-pscore_spillover),
                           pscore_direct     * pscore_spillover]).T
     else:
-        return pscore_spillover
+        raise ValueError('Exposure must be either "spillover", "direct", or "interaction"')
 
 
 def kernel(A, bw=-1, K=1):
@@ -137,11 +148,11 @@ def kernel(A, bw=-1, K=1):
     K         : int
                 K-neighborhood exposure
     """
-    # if spr.issparse(A):
-    #     A = A.toarray().astype(int)
+    if spr.issparse(A):
+        A_mat = A.toarray().astype(int)
     n = A.shape[0]
     # Calculate shortest path distance matrix
-    dist_matrix = spr.csgraph.dijkstra(csgraph=A, directed=False, unweighted=True)
+    dist_matrix = spr.csgraph.dijkstra(csgraph=A_mat, directed=False, unweighted=True)
     _, labels = spr.csgraph.connected_components(csgraph=A, directed=False, return_labels=True)
     unique, counts = np.unique(labels, return_counts=True)
     Gcc_label = unique[np.argmax(counts)]

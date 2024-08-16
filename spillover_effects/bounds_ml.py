@@ -34,14 +34,14 @@ class BoundsML():
                     Name of the propensity score variable(s)
     name_x        : str or list
                     Name of covariate(s)
-    data          : DataFrame
+    dataframe     : DataFrame
                     Data containing the variables of interest
     kernel_weights: array
                     Kernel weights for the estimation
     subsample     : boolean array
                     Subsample of observations to consider
-    interaction   : bool
-                    Whether to include interaction terms between Z and X
+    interaction   : str
+                    Type of interaction to include (treatment, all, none)
     contrast      : str
                     Type of contrast to estimate (direct or spillover)
     method        : str
@@ -64,6 +64,8 @@ class BoundsML():
                     Whether to print progress and metrics
     seed          : int
                     Random seed for cross-validation and cross-fitting
+    warn          : bool
+                    Whether to print warnings
 
     Attributes
     ----------
@@ -82,7 +84,7 @@ class BoundsML():
                 name_z,
                 name_pscore,
                 name_x,
-                data,
+                dataframe,
                 kernel_weights=None,
                 subsample=None,
                 interaction='none',
@@ -91,14 +93,15 @@ class BoundsML():
                 semi_cf=True, timestop=60, 
                 lambdas_proba=np.geomspace(1e-4, 1e4, 10),
                 lambdas_quant=np.geomspace(1e-4, 1e4, 10),
-                alpha=0.05, verbose=False, seed=None):
+                alpha=0.05, verbose=False, seed=None, warn=True):
 
         # Kernel matrix
+        data = dataframe.copy()
         n = data.shape[0]
         weights = np.identity(n) if kernel_weights is None else kernel_weights
         # Filter by subsample of interest and nonmissing values on covariates
         if subsample is not None:
-            print('Warning: Filtering by subsample of {} observations'.format(subsample.sum()))
+            print('Warning: Filtering by subsample of {} observations'.format(subsample.sum())) if warn else None
             weights = weights[subsample,:][:,subsample]
             data = data[subsample].copy()
         name_x = [name_x] if isinstance(name_x, str) else name_x
@@ -106,12 +109,13 @@ class BoundsML():
             data[name_z+'0'] = 1 - data[name_z]
             data = data.rename(columns={name_z: name_z+'1'})
             name_z = [name_z+'0', name_z+'1']
-        missing = data[name_z + name_x].isna().any(axis=1)
+        missing = data[[name_y] + name_z + name_x].isna().any(axis=1)
+        missx = data[name_z + name_x].isna().any(axis=1)
         missy = data[name_y].isna().sum()
         if missing.sum() > 0: 
-            print('Warning: {} observations have missing values ({} missing outcomes)'.format(missing.sum(), missy))
-            weights = weights[~missing,:][:,~missing]
-            data = data[~missing].copy()
+            print('Warning: {} observations have missing values ({} missing outcomes)'.format(missing.sum(), missy)) if warn else None
+            weights = weights[~missx,:][:,~missx]
+            data = data[~missx].copy()
         # Check for propensity score outside (0.01, 0.99)
         if isinstance(name_pscore, str):
             psvals = data[name_pscore].values
@@ -121,7 +125,7 @@ class BoundsML():
         full_pscores = data[name_z].values * data[name_pscore].values
         valid = (np.sum(full_pscores, axis=1) > 0.01) & (np.sum(full_pscores, axis=1) < 0.99)
         if np.sum(~valid) > 0:
-            print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(np.sum(~valid)))
+            print('Warning: {} observations have propensity scores outside (0.01, 0.99)'.format(np.sum(~valid))) if warn else None
             weights = weights[valid,:][:,valid]
             data = data[valid].copy()
         # Outcome and treatment exposure
@@ -140,10 +144,11 @@ class BoundsML():
             X = np.hstack([Z[:, 1:2], X, Z[:, 1:2] * X, Z[:, 1:2] * XX])
             name_xx = ['{}*{}'.format(name_x[i], name_x[j]) for i in range(k) for j in range(k) if i != j]
             name_all = [name_z[1]] + name_x + ['treatment*'+cols for cols in name_x] + ['treatment*'+cols for cols in name_xx]
-        else:
-            print('Warning: Interaction term not included')
+        elif interaction=='none':
             X = np.hstack([Z[:, 1:2], X])
             name_all = [name_z[1]] + name_x
+        else:
+            raise ValueError("Interaction not recognized. Choose 'treatment', 'all' or 'none'")
         X = pd.DataFrame(X, columns=name_all)
         # Calculate trimming probability
         s1, s0, vars_proba = first_stage_proba(data['selection'], X, name_z[1],
@@ -329,10 +334,12 @@ def first_stage_proba(Y, X, treatment, n_splits, n_cvs, lambdas, semi_cf=True, t
         print("Predicted probabilities with method: {}".format(sp_method))
     model_vars = []
     s0, s1 = np.zeros(X.shape[0]), np.zeros(X.shape[0])
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed).split(X, Y) if n_splits > 1 else [(np.arange(X.shape[0]), 
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed).split(X, Y) if n_splits > 1 else [(np.arange(X.shape[0]),
                                                                                                                  np.arange(X.shape[0]))]
+    i = 0
 
     for train, test in skf:
+        i += 1
         if method == 'parametric':
             selected_vars = X.columns.tolist()
             model_vars.append(selected_vars)
@@ -364,14 +371,14 @@ def first_stage_proba(Y, X, treatment, n_splits, n_cvs, lambdas, semi_cf=True, t
         if verbose:
             accuracy = clf.score(X.iloc[test][selected_vars], Y.iloc[test])
             if method == 'parametric':
-                print("accuracy={:.2f}".format(accuracy))
+                print("{}) accuracy={:.2f}".format(i, accuracy))
             elif method == 'lasso':
                 pct_nonzero = np.mean(logit_coef != 0)*100
-                print("{} ({:.1f}%) selected variables; lambda={:.2f}; accuracy={:.2f}".format(len(selected_vars), 
+                print("{}) {} ({:.1f}%) selected variables; lambda={:.2f}; accuracy={:.2f}".format(i, len(selected_vars),
                                                                                                pct_nonzero, 1/lambda_best, accuracy))
             elif method == 'automl':
                 clf_best = automl._final_estimator.best_estimator if semi_cf else clf._final_estimator.best_estimator
-                print("{}; accuracy={:.2f}".format(clf_best, accuracy))
+                print("{}) {}; accuracy={:.2f}".format(i, clf_best, accuracy))
 
     return s1, s0, model_vars
 
@@ -416,10 +423,12 @@ def first_stage_quant(Y, X, treatment, n_splits, n_cvs, lambdas, q_grid, semi_cf
         print("Conditional quantiles with method: {}".format(sp_method))
     model_vars = []
     q0, q1 = np.zeros((Y.shape[0], q_grid.size)), np.zeros((Y.shape[0], q_grid.size))
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed).split(X, Y) if n_splits > 1 else [(np.arange(X.shape[0]), 
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed).split(X, Y) if n_splits > 1 else [(np.arange(X.shape[0]),
                                                                                                       np.arange(X.shape[0]))]
+    i = 0
 
     for train, test in kf:
+        i += 1
         if not semi_cf and method == 'lasso':
             qr_cv.fit(X.iloc[train], Y.iloc[train])
             lambda_best = qr_cv['reg'].best_params_['alpha']
@@ -453,9 +462,9 @@ def first_stage_quant(Y, X, treatment, n_splits, n_cvs, lambdas, q_grid, semi_cf
                 if q_grid[q]*100 in [1, 10, 25, 50, 75, 90, 99]:
                     if method == 'lasso':
                         pct_nonzero = np.mean(qr_coef != 0)*100
-                        print("Q {:.2f}) {} ({:.1f}%) selected variables; lambda = {:.2f}; R2 = {:.2f}".format(q_grid[q], len(selected_vars), 
-                                                                                                           pct_nonzero, lambda_best, r2))
+                        print("{}) q{:.0f}: {} ({:.1f}%) selected variables; lambda={:.3f}; R2={:.2f}".format(i, q_grid[q]*100, len(selected_vars),
+                                                                                                              pct_nonzero, lambda_best, r2))
                     else:
-                        print("Q {:.2f}) R2 = {:.2f}".format(q_grid[q], r2))
+                        print("{}) q{:.0f}: R2 = {:.2f}".format(i, q_grid[q]*100, r2))
 
     return np.sort(q1), np.sort(q0), model_vars
